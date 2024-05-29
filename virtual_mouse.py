@@ -1,93 +1,56 @@
 import cv2
-from cvzone.HandTrackingModule import HandDetector
-import mouse
-import threading
 import numpy as np
 import time
+import HandTracking as ht
+import autopy   # Install using "pip install autopy"
 
-frameR = 100
-cam_w, cam_h = 640, 480
-cap = cv2.VideoCapture(0)
-cap.set(3, cam_w)
-cap.set(4, cam_h)
-detector = HandDetector(detectionCon=0.9, maxHands=1)
+### Variables Declaration
+pTime = 0               # Used to calculate frame rate
+width = 640             # Width of Camera
+height = 480            # Height of Camera
+frameR = 100            # Frame Rate
+smoothening = 8         # Smoothening Factor
+prev_x, prev_y = 0, 0   # Previous coordinates
+curr_x, curr_y = 0, 0   # Current coordinates
 
-l_delay = 0
-r_delay = 0
-double_delay = 0
+cap = cv2.VideoCapture(0)   # Getting video feed from the webcam
+cap.set(3, width)           # Adjusting size
+cap.set(4, height)
 
-def l_clk_delay():
-    global l_delay
-    global l_clk_thread
-    time.sleep(1)
-    l_delay = 0
-    l_clk_thread = threading.Thread(target=l_clk_delay)
-
-def r_clk_delay():
-    global r_delay
-    global r_clk_thread
-    time.sleep(1)
-    r_delay = 0
-    r_clk_thread = threading.Thread(target=r_clk_delay)
-
-def double_clk_delay():
-    global double_delay
-    global double_clk_thread
-    time.sleep(2)
-    double_delay = 0
-    double_clk_thread = threading.Thread(target=double_clk_delay)
-
-l_clk_thread = threading.Thread(target=l_clk_delay)
-r_clk_thread = threading.Thread(target=r_clk_delay)
-double_clk_thread = threading.Thread(target=double_clk_delay)
-
+detector = ht.handDetector(maxHands=1)                  # Detecting one hand at max
+screen_width, screen_height = autopy.screen.size()      # Getting the screen size
 while True:
     success, img = cap.read()
-    if success:
-        img = cv2.flip(img, 1)
-        hands, img = detector.findHands(img ,flipType=False)
-        cv2.rectangle(img, (frameR, frameR), (cam_w - frameR, cam_h - frameR), (255, 0, 255), 2)
-        if hands:
-            lmlist = hands[0]['lmList']
-            ind_x, ind_y = lmlist[8][0], lmlist[8][1]
-            mid_x, mid_y = lmlist[12][0], lmlist[12][1]
-            cv2.circle(img, (ind_x, ind_y), 5, (0, 255, 255), 2)
-            cv2.circle(img, (mid_x, mid_y), 5, (0, 255, 255), 2)
-            fingers = detector.fingersUp(hands[0])
-    
-            # Mouse movement
-            if fingers[1] == 1 and fingers[2] == 0 and fingers[0]==1:
-                conv_x = int(np.interp(ind_x, (frameR,cam_w-frameR),(0, 1536)))
-                conv_y = int(np.interp(ind_y, (frameR,cam_h-frameR),(0, 864)))
-                mouse.move(conv_x,conv_y)
-                print(conv_x,conv_y)
-    
-            # Mouse Button Clicks
-            if fingers[1] == 1 and fingers[2] == 1 and fingers[0] == 1:
-                if abs(ind_x-mid_x) < 25 :
-                    # Left Click
-                    if fingers[4] == 0 and l_delay == 0:
-                        mouse.click(button = "left")
-                        l_delay = 1
-                        l_clk_thread.start()
-                    # Right Click
-                    if fingers[4] == 1 and r_delay == 0:
-                        mouse.click(button = "right")
-                        r_delay = 1
-                        r_clk_thread.start()
-            # Mouse Scrolling
-            if fingers[1] == 1 and fingers[2] == 1 and fingers[0] == 0 and fingers[4] == 0:
-                if abs(ind_x-mid_x) < 25:
-                    mouse.wheel(delta=-1)
-            if fingers[1] == 1 and fingers[2] == 1 and fingers[0] == 0 and fingers[4] == 1:
-                if abs(ind_x - mid_x) < 25:
-                    mouse.wheel(delta=1)
-    
-            # Double Mouse Click
-            if fingers[1] == 1 and fingers[2] == 0 and fingers[0] == 0 and fingers[4] == 0 and double_delay == 0:
-                double_delay =1
-                mouse.double_click(button="left")
-                double_clk_thread.start()
-    
-        cv2.imshow("Camera Feed", img)
-        cv2.waitKey(1)
+    img = detector.findHands(img)                       # Finding the hand
+    lmlist, bbox = detector.findPosition(img)           # Getting position of hand
+
+    if len(lmlist)!=0:
+        x1, y1 = lmlist[8][1:]
+        x2, y2 = lmlist[12][1:]
+
+        fingers = detector.fingersUp()      # Checking if fingers are upwards
+        cv2.rectangle(img, (frameR, frameR), (width - frameR, height - frameR), (255, 0, 255), 2)   # Creating boundary box
+        if fingers[1] == 1 and fingers[2] == 0:     # If fore finger is up and middle finger is down
+            x3 = np.interp(x1, (frameR,width-frameR), (0,screen_width))
+            y3 = np.interp(y1, (frameR, height-frameR), (0, screen_height))
+
+            curr_x = prev_x + (x3 - prev_x)/smoothening
+            curr_y = prev_y + (y3 - prev_y) / smoothening
+
+            autopy.mouse.move(screen_width - curr_x, curr_y)    # Moving the cursor
+            cv2.circle(img, (x1, y1), 7, (255, 0, 255), cv2.FILLED)
+            prev_x, prev_y = curr_x, curr_y
+
+        if fingers[1] == 1 and fingers[2] == 1:     # If fore finger & middle finger both are up
+            length, img, lineInfo = detector.findDistance(8, 12, img)
+
+            if length < 40:     # If both fingers are really close to each other
+                cv2.circle(img, (lineInfo[4], lineInfo[5]), 15, (0, 255, 0), cv2.FILLED)
+                autopy.mouse.click()    # Perform Click
+
+    cTime = time.time()
+    fps = 1/(cTime-pTime)
+    pTime = cTime
+    cv2.putText(img, str(int(fps)), (20, 50), cv2.FONT_HERSHEY_PLAIN, 3, (255, 0, 0), 3)
+    cv2.imshow("Image", img)
+    cv2.waitKey(1)
